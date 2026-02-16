@@ -1,0 +1,85 @@
+name: Build & Publish Page Loader
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"   # release tags like v1.0.0
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    env:
+      ARTIFACTORY_URL: "https://artifactory.company.com"
+      NPM_REGISTRY: "https://artifactory.company.com/npm"
+      STATIC_REPO: "static-local/eds-token-page-loader"
+
+    steps:
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # -----------------------------------
+    #  Build the npm package
+    # -----------------------------------
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: "18.x"
+        registry-url: ${{ env.NPM_REGISTRY }}
+
+    - name: Install dependencies
+      working-directory: ./page-loader
+      run: npm install
+
+    - name: Build npm package
+      working-directory: ./page-loader
+      run: npm run build
+
+    - name: Publish npm package to Artifactory
+      working-directory: ./page-loader
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+      run: |
+        npm publish --registry ${{ env.NPM_REGISTRY }}
+
+    # -----------------------------------
+    #  Build AEM bundle
+    # -----------------------------------
+    - name: Bundle for AEM
+      working-directory: ./page-loader
+      run: |
+        npm install tsup --no-save
+        npx tsup src/aem-entry.js --format iife --name pageLoaderBundle --outDir build/aem
+
+    # -----------------------------------
+    #  Prepare and package clientlib
+    # -----------------------------------
+    - name: Prepare clientlib folder
+      run: |
+        mkdir -p clientlib-temp/js
+
+        # Copy static files
+        cp node_modules/lottie-web/build/player/esm/lottie_svg.min.js clientlib-temp/js/
+        cp page-loader/build/aem/page-loader.bundle.js clientlib-temp/js/
+        cp eds-clientlib-page-loader/eds-page-loader.js clientlib-temp/js/
+        cp eds-clientlib-page-loader/eds-page-loader-init.js clientlib-temp/js/
+        cp eds-clientlib-page-loader/.content.xml clientlib-temp/
+
+    - name: Create ZIP for AEM
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        cd clientlib-temp
+        zip -r eds-token-page-loader-${VERSION}.zip .
+
+    # -----------------------------------
+    #  Publish ZIP to Artifactory
+    # -----------------------------------
+    - name: Upload clientlib ZIP to Artifactory
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        curl -u ${{ secrets.ARTIFACTORY_USER }}:${{ secrets.ARTIFACTORY_TOKEN }} \
+          -T clientlib-temp/eds-token-page-loader-${VERSION}.zip \
+          "${{ env.ARTIFACTORY_URL }}/${{ env.STATIC_REPO }}/eds-token-page-loader-${VERSION}.zip"
+
